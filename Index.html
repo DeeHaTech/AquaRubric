@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <?!= include('CSS'); ?>
+  </head>
+  <body>
+    <aside id="controls">
+      <div class="app-brand">
+        <img
+          src="https://drive.google.com/thumbnail?id=1k1hToRtNT9TWfhJKMbRrPCmDj4XfrFdW&sz=w400"
+          class="app-brand-logo"
+          alt="Chadwick Dolphins"
+          referrerpolicy="no-referrer"
+        />
+        <div class="app-brand-text">
+          <div class="app-brand-title">VS PHE</div>
+          <div class="app-brand-subtitle">Swim Rubric</div>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label class="control-label">
+          Spreadsheet
+          <button
+            type="button"
+            class="label-action-btn"
+            onclick="openNewSpreadsheetModal()"
+            title="Create new spreadsheet"
+          >
+            + New
+          </button>
+        </label>
+        <select id="spreadsheetSelect" onchange="onSpreadsheetChange()">
+          <? var _ss = (typeof spreadsheets !== 'undefined' && spreadsheets) ? spreadsheets : []; ?>
+          <? if (_ss.length === 0) { ?>
+          <option value="">-- No spreadsheets configured --</option>
+          <? } ?>
+          <? for (var _i = 0; _i < _ss.length; _i++) {
+             var _sel = (typeof initialSpreadsheetId !== 'undefined' && initialSpreadsheetId === _ss[_i].id) ? ' selected' : '';
+        ?>
+          <option value="<?= _ss[_i].id ?>" <?!="_sel" ?>
+            ><?= _ss[_i].label ?>
+          </option>
+          <? } ?>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label class="control-label">Grade</label>
+        <select id="gradeSelect" onchange="onGradeChange()">
+          <option value="Grade 1">Grade 1</option>
+          <option value="Grade 2" selected>Grade 2</option>
+          <option value="Grade 3">Grade 3</option>
+          <option value="Grade 4">Grade 4</option>
+          <option value="Grade 5">Grade 5</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label class="control-label">Class</label>
+        <select id="classSelect" onchange="onClassChange()">
+          <option value="">Loading...</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label class="control-label">Teacher</label>
+        <select id="teacherSelect" onchange="onTeacherChange()">
+          <option value="">-- All Teachers --</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label class="control-label">Student</label>
+        <select id="studentSelect" onchange="onStudentChange()">
+          <option value="">-- Select Class First --</option>
+        </select>
+      </div>
+
+      <div class="mode-toggle">
+        <button id="btnView" class="mode-btn active" onclick="setMode('view')">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+          View
+        </button>
+        <button id="btnEdit" class="mode-btn" onclick="setMode('edit')">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path
+              d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"
+            />
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+          </svg>
+          Edit
+        </button>
+      </div>
+
+      <div class="sidebar-actions">
+        <button onclick="window.print()">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <polyline points="6 9 6 2 18 2 18 9"></polyline>
+            <path
+              d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"
+            ></path>
+            <rect x="6" y="14" width="12" height="8"></rect>
+          </svg>
+          Print / Save as PDF
+        </button>
+
+        <button class="secondary" onclick="openSpreadsheet()">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path
+              d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+            ></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="8" y1="13" x2="16" y2="13"></line>
+            <line x1="8" y1="17" x2="16" y2="17"></line>
+            <polyline points="10 9 9 9 8 9"></polyline>
+          </svg>
+          Spreadsheet
+        </button>
+
+        <button class="secondary" onclick="onGradeChange()">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path
+              d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"
+            ></path>
+          </svg>
+          Refresh
+        </button>
+      </div>
+    </aside>
+
+    <main id="mainContent">
+      <div id="outputArea"></div>
+    </main>
+
+    <?!= include('JS'); ?>
+  </body>
+</html>

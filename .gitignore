@@ -1,0 +1,9 @@
+# Node
+node_modules/
+
+# clasp credentials should NEVER be committed — they live in ~/ anyway,
+# but add it here as a belt-and-suspenders guard.
+.clasprc.json
+
+# macOS
+.DS_Store

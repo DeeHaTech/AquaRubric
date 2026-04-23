@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -n '`' \"/Users/danielha/Desktop/VS Swim Master Rubric 2026 App/JS.html\")",
+      "Bash(npm --version)",
+      "Bash(git --version)"
+    ]
+  }
+}

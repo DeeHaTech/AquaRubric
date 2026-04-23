@@ -1,0 +1,1148 @@
+<script>
+  let allData = [];
+  let currentGrade = "Grade 1";
+  let currentSpreadsheetId = "";
+  let preservedStudentName = null;
+  let viewMode = "view"; // "view" or "edit"
+  let activeCommentPopover = null; // { studentIdx, fieldKey }
+  let activeModal = null; // { studentIdx, fieldKey }
+
+  const STANDARDS = {
+    "Grade 1": { free: 2, back: 2, breast: 1, dist: "5-10m" },
+    "Grade 2": { free: 2, back: 2, breast: 2, dist: "25m" },
+    "Grade 3": { free: 3, back: 3, breast: 2, dist: "50m" },
+    "Grade 4": { free: 4, back: 4, breast: 3, dist: "75m" },
+    "Grade 5": { free: 4, back: 4, breast: 3, dist: "100m" },
+  };
+
+  window.onload = function () {
+    document.getElementById("gradeSelect").value = "Grade 1";
+    const ssSel = document.getElementById("spreadsheetSelect");
+    currentSpreadsheetId = ssSel ? ssSel.value || "" : "";
+    loadGradeData();
+    document.addEventListener("click", handleGlobalClick, true);
+  };
+
+  // ============================================================
+  // MODE TOGGLE
+  // ============================================================
+  function setMode(mode) {
+    commitPendingEdits();
+    viewMode = mode;
+    document
+      .getElementById("btnView")
+      .classList.toggle("active", mode === "view");
+    document
+      .getElementById("btnEdit")
+      .classList.toggle("active", mode === "edit");
+    document.body.classList.toggle("edit-mode", mode === "edit");
+    closePopover();
+    closeModal();
+    renderView();
+  }
+
+  // ============================================================
+  // FILTERS (each commits pending edits before switching)
+  // ============================================================
+  function onSpreadsheetChange() {
+    commitPendingEdits();
+    currentSpreadsheetId =
+      document.getElementById("spreadsheetSelect").value || "";
+    // Reset dependent dropdowns so stale class/teacher/student from the
+    // previous spreadsheet don't leak into the next load.
+    document.getElementById("classSelect").innerHTML =
+      '<option value="">Loading...</option>';
+    document.getElementById("teacherSelect").innerHTML =
+      '<option value="">-- All Teachers --</option>';
+    document.getElementById("studentSelect").innerHTML =
+      '<option value="">-- Select Class First --</option>';
+    preservedStudentName = null;
+    loadGradeData();
+  }
+
+  function openSpreadsheet() {
+    if (!currentSpreadsheetId) {
+      alert("No spreadsheet selected.");
+      return;
+    }
+    window.open(
+      "https://docs.google.com/spreadsheets/d/" +
+        currentSpreadsheetId +
+        "/edit",
+      "_blank"
+    );
+  }
+
+  // ============================================================
+  // CREATE NEW SPREADSHEET (clones the template into the target folder)
+  // ============================================================
+  // Academic year defaults to the upcoming one. If current month ≥ Aug we've
+  // rolled into a new academic year already.
+  function defaultStartYear() {
+    const now = new Date();
+    return now.getMonth() >= 7 ? now.getFullYear() : now.getFullYear();
+  }
+
+  function openNewSpreadsheetModal() {
+    closePopover();
+    closeModal();
+    const y1 = defaultStartYear();
+    const y2 = y1 + 1;
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal modal-small">
+        <div class="modal-title">Create New Spreadsheet</div>
+        <div style="font-size:13px; color:#475569; margin-bottom:16px; line-height:1.5;">
+          Clones the template spreadsheet into the designated Drive folder.
+          Grade 1–5 tabs and column layout are preserved; student rows start empty.
+        </div>
+        <div class="year-picker">
+          <div class="year-stepper">
+            <button type="button" class="year-arrow" onclick="bumpYear('y1', 1)" aria-label="Increase start year">▲</button>
+            <input id="yearStart" class="year-input" type="text" inputmode="numeric" maxlength="4" value="${y1}" oninput="onYearInput('y1')" />
+            <button type="button" class="year-arrow" onclick="bumpYear('y1', -1)" aria-label="Decrease start year">▼</button>
+          </div>
+          <div class="year-separator">–</div>
+          <div class="year-stepper">
+            <button type="button" class="year-arrow" onclick="bumpYear('y2', 1)" aria-label="Increase end year">▲</button>
+            <input id="yearEnd" class="year-input" type="text" inputmode="numeric" maxlength="4" value="${y2}" oninput="onYearInput('y2')" />
+            <button type="button" class="year-arrow" onclick="bumpYear('y2', -1)" aria-label="Decrease end year">▼</button>
+          </div>
+        </div>
+        <div id="yearPreview" style="text-align:center; font-size:12px; color:#64748b; margin-top:12px; line-height:1.6;">
+          Displayed as <strong style="color:#002147;">${y1}-${y2}</strong><br>
+          File name <span style="color:#475569;">${y1}-${String(y2).slice(
+      -2
+    )} VS Swim Rubric</span>
+        </div>
+        <div class="popover-actions" style="margin-top:18px;">
+          <button class="secondary" onclick="closeModal()">Cancel</button>
+          <button id="newSpreadsheetCreateBtn" onclick="submitNewSpreadsheet()">Create</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    activeModal = { kind: "newSpreadsheet" };
+  }
+
+  function bumpYear(which, delta) {
+    const id = which === "y1" ? "yearStart" : "yearEnd";
+    const inp = document.getElementById(id);
+    if (!inp) return;
+    let v = parseInt(inp.value, 10);
+    if (isNaN(v)) v = defaultStartYear();
+    v = Math.max(2000, Math.min(2099, v + delta));
+    inp.value = String(v);
+    updateYearPreview();
+  }
+
+  function onYearInput(which) {
+    // Strip non-digits and clamp length
+    const id = which === "y1" ? "yearStart" : "yearEnd";
+    const inp = document.getElementById(id);
+    if (!inp) return;
+    inp.value = inp.value.replace(/\D/g, "").slice(0, 4);
+    updateYearPreview();
+  }
+
+  function updateYearPreview() {
+    const y1 = document.getElementById("yearStart").value || "----";
+    const y2 = document.getElementById("yearEnd").value || "----";
+    const preview = document.getElementById("yearPreview");
+    if (!preview) return;
+    const tail = y2.length === 4 ? y2.slice(-2) : "--";
+    preview.innerHTML =
+      'Displayed as <strong style="color:#002147;">' +
+      escapeHtml(y1 + "-" + y2) +
+      "</strong><br>" +
+      'File name <span style="color:#475569;">' +
+      escapeHtml(y1 + "-" + tail + " VS Swim Rubric") +
+      "</span>";
+  }
+
+  function submitNewSpreadsheet() {
+    const btn = document.getElementById("newSpreadsheetCreateBtn");
+    const y1 = parseInt((document.getElementById("yearStart") || {}).value, 10);
+    const y2 = parseInt((document.getElementById("yearEnd") || {}).value, 10);
+    if (
+      isNaN(y1) ||
+      isNaN(y2) ||
+      y1 < 2000 ||
+      y2 < 2000 ||
+      y1 > 2099 ||
+      y2 > 2099
+    ) {
+      alert("Please enter valid years (e.g. 2028 and 2029).");
+      return;
+    }
+    const label = y1 + "-" + y2;
+    const fileName = y1 + "-" + String(y2).slice(-2) + " VS Swim Rubric";
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Creating...";
+    }
+    showToast("📄 Cloning template...", 0);
+    google.script.run
+      .withSuccessHandler((res) => {
+        hideToast();
+        closeModal();
+        if (!res || !res.id) {
+          alert("Unexpected response.");
+          return;
+        }
+        // Add to dropdown and select the new spreadsheet
+        const sel = document.getElementById("spreadsheetSelect");
+        // If the "No spreadsheets configured" placeholder is present, clear it
+        if (sel.options.length === 1 && sel.options[0].value === "") {
+          sel.innerHTML = "";
+        }
+        const opt = document.createElement("option");
+        opt.value = res.id;
+        opt.text = res.label;
+        // Prepend so newest-created sits at the top (matches server-side config order)
+        if (sel.firstChild) sel.insertBefore(opt, sel.firstChild);
+        else sel.add(opt);
+        sel.value = res.id;
+        onSpreadsheetChange();
+        showCreatedSpreadsheetModal(res);
+      })
+      .withFailureHandler((err) => {
+        hideToast();
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "Create";
+        }
+        alert("Error: " + (err && err.message ? err.message : err));
+      })
+      .createNewSpreadsheet(label, fileName);
+  }
+
+  function showCreatedSpreadsheetModal(res) {
+    closePopover();
+    closeModal();
+    const url =
+      res.url || "https://docs.google.com/spreadsheets/d/" + res.id + "/edit";
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal modal-small">
+        <div class="modal-title">✅ Spreadsheet Created</div>
+        <div style="font-size:14px; color:#334155; margin-bottom:14px; line-height:1.5;">
+          <strong>${escapeHtml(res.label)}</strong> is ready.
+          <a href="${escapeHtml(url)}" target="_blank" rel="noopener"
+             style="display:inline-block; margin-top:10px; color:#002147; font-weight:600; text-decoration:underline;">
+            Click here to open the new spreadsheet →
+          </a>
+        </div>
+        <div class="popover-actions">
+          <button onclick="closeModal()">Done</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    activeModal = { kind: "createdSpreadsheet" };
+  }
+
+  function onGradeChange() {
+    commitPendingEdits();
+    loadGradeData();
+  }
+  function onClassChange() {
+    commitPendingEdits();
+    populateTeachers();
+  }
+  function onTeacherChange() {
+    commitPendingEdits();
+    populateStudents();
+  }
+  function onStudentChange() {
+    commitPendingEdits();
+    renderView();
+  }
+
+  function loadGradeData() {
+    const sSelect = document.getElementById("studentSelect");
+    if (
+      sSelect &&
+      sSelect.selectedIndex > 0 &&
+      sSelect.value !== "ALL_STUDENTS"
+    ) {
+      preservedStudentName = sSelect.options[sSelect.selectedIndex].text;
+    } else {
+      preservedStudentName = null;
+    }
+    currentGrade = document.getElementById("gradeSelect").value;
+    if (!currentSpreadsheetId) {
+      document.getElementById("outputArea").innerHTML =
+        "<div style='text-align:center; padding:50px; color:#666;'>" +
+        "No spreadsheet configured. Add one to <code>SPREADSHEET_CONFIG</code> in Script Properties." +
+        "</div>";
+      return;
+    }
+    document.getElementById("outputArea").innerHTML =
+      "<div style='text-align:center; padding:50px; color:#666;'>Loading " +
+      currentGrade +
+      " Data...</div>";
+    google.script.run
+      .withSuccessHandler(initApp)
+      .withFailureHandler((err) => {
+        document.getElementById("outputArea").innerHTML =
+          "<div style='text-align:center; padding:50px; color:#c62828;'>" +
+          "Error loading data: " +
+          (err && err.message ? err.message : err) +
+          "</div>";
+      })
+      .getData(currentSpreadsheetId, currentGrade);
+  }
+
+  function initApp(data) {
+    if (data.error) {
+      alert(data.error);
+      return;
+    }
+    allData = data.filter((s) => {
+      const nameCheck = resolveName(s);
+      return nameCheck !== null && nameCheck !== "";
+    });
+    const classSelect = document.getElementById("classSelect");
+    const classes = [...new Set(allData.map((s) => s.class))].sort();
+    classSelect.innerHTML = '<option value="ALL">All Classes</option>';
+    classes.forEach((c) => {
+      let opt = document.createElement("option");
+      opt.value = c;
+      opt.text = c;
+      classSelect.add(opt);
+    });
+    if (classes.length > 0) classSelect.value = classes[0];
+    populateTeachers();
+  }
+
+  function populateTeachers() {
+    const selectedClass = document.getElementById("classSelect").value;
+    const teacherSelect = document.getElementById("teacherSelect");
+    teacherSelect.innerHTML = '<option value="ALL">All Teachers</option>';
+    let filtered = allData;
+    if (selectedClass !== "ALL")
+      filtered = allData.filter((s) => s.class === selectedClass);
+    const teachers = [
+      ...new Set(
+        filtered
+          .map((s) => s.teacher)
+          .filter((t) => t && t.toString().trim() !== "")
+      ),
+    ].sort();
+    teachers.forEach((t) => {
+      let opt = document.createElement("option");
+      opt.value = t;
+      opt.text = t;
+      teacherSelect.add(opt);
+    });
+    populateStudents();
+  }
+
+  function populateStudents() {
+    const selectedClass = document.getElementById("classSelect").value;
+    const selectedTeacher = document.getElementById("teacherSelect").value;
+    const studentSelect = document.getElementById("studentSelect");
+    studentSelect.innerHTML = "";
+    let allOpt = document.createElement("option");
+    allOpt.value = "ALL_STUDENTS";
+    allOpt.text = "All Students";
+    studentSelect.add(allOpt);
+
+    let filtered = allData;
+    if (selectedClass !== "ALL")
+      filtered = filtered.filter((s) => s.class === selectedClass);
+    if (selectedTeacher !== "ALL")
+      filtered = filtered.filter((s) => s.teacher === selectedTeacher);
+
+    filtered.forEach((s) => {
+      let originalIndex = allData.indexOf(s);
+      let opt = document.createElement("option");
+      opt.value = originalIndex;
+      opt.text = resolveName(s);
+      studentSelect.add(opt);
+    });
+
+    studentSelect.value = "ALL_STUDENTS";
+
+    if (preservedStudentName) {
+      for (let i = 0; i < studentSelect.options.length; i++) {
+        if (studentSelect.options[i].text === preservedStudentName) {
+          studentSelect.selectedIndex = i;
+          break;
+        }
+      }
+    }
+    renderView();
+  }
+
+  function getFilteredStudents() {
+    const selectedClass = document.getElementById("classSelect").value;
+    const selectedTeacher = document.getElementById("teacherSelect").value;
+    const selectedVal = document.getElementById("studentSelect").value;
+
+    if (selectedVal && selectedVal !== "ALL_STUDENTS" && selectedVal !== "") {
+      return [
+        { student: allData[parseInt(selectedVal)], idx: parseInt(selectedVal) },
+      ];
+    }
+    let list = allData.map((s, i) => ({ student: s, idx: i }));
+    if (selectedClass !== "ALL")
+      list = list.filter((x) => x.student.class === selectedClass);
+    if (selectedTeacher !== "ALL")
+      list = list.filter((x) => x.student.teacher === selectedTeacher);
+    return list;
+  }
+
+  // ============================================================
+  // MAIN RENDER
+  // ============================================================
+  function renderView() {
+    const output = document.getElementById("outputArea");
+    output.innerHTML = "";
+    closePopover();
+
+    const editable = viewMode === "edit";
+    const students = getFilteredStudents();
+    if (students.length === 0) {
+      output.innerHTML =
+        "<div style='text-align:center; padding:50px; color:#666;'>No students match the current filters.</div>";
+      return;
+    }
+
+    output.innerHTML = students
+      .map(({ student, idx }) => createRubricHTML(student, editable, idx))
+      .join("");
+  }
+
+  function resolveName(s) {
+    const fName = s.firstName || s.firstname || s["First Name"];
+    const lName = s.lastName || s.lastname || s["Last Name"];
+    const full = s.fullName || s.fullname || s["Full Name"];
+    if (fName && lName) return fName + " " + lName;
+    if (full) return full;
+    return null;
+  }
+
+  function hasO(v) {
+    return typeof v === "string" && /^o(\s|$)/i.test(v.trim());
+  }
+
+  function shouldUseLowLevel(s) {
+    const t = (s.rubricType || "").toString().trim().toLowerCase();
+    return t.indexOf("low") === 0;
+  }
+
+  // ============================================================
+  // UNIFIED RUBRIC RENDERING (works for both view & edit)
+  // ============================================================
+  function createRubricHTML(s, editable, i) {
+    const lowLevel = shouldUseLowLevel(s);
+    const toolbar = editable ? editToolbar(i, lowLevel) : "";
+    const page = lowLevel
+      ? createSpecialRubricHTML(s, editable, i)
+      : createNormalRubricHTML(s, editable, i);
+    return `<div class="rubric-wrapper" id="student-wrap-${i}">${toolbar}${page}</div>`;
+  }
+
+  // Surgical re-render of a single student's card (edit mode avoids rebuilding all pages).
+  function renderStudent(i) {
+    const s = allData[i];
+    if (!s) return;
+    const wrapper = document.getElementById("student-wrap-" + i);
+    if (!wrapper) {
+      renderView();
+      return;
+    }
+    const tmp = document.createElement("div");
+    tmp.innerHTML = createRubricHTML(s, viewMode === "edit", i);
+    wrapper.replaceWith(tmp.firstElementChild);
+  }
+
+  function getStandardText(grade) {
+    if (grade === "Grade 1" || grade === "Grade 2")
+      return "I can swim unassisted in a prone position (face down) with alternating arm and leg action for short amount of time.";
+    if (grade === "Grade 3")
+      return "I can swim unassisted in a prone position (face down) alternating arm and leg action for 25m with a body position approaching horizontal.";
+    if (grade === "Grade 4" || grade === "Grade 5")
+      return "I can swim efficient freestyle for 25m with a horizontal body position, consistent kick and proper side breathing and timing.";
+    return "";
+  }
+
+  function getSpecialClass(val) {
+    return hasO(val) ? "highlight-student" : "";
+  }
+
+  function getClass(cellLevel, studentScore, expectedLevel) {
+    if (cellLevel === expectedLevel && cellLevel == studentScore)
+      return "highlight-both";
+    if (cellLevel == studentScore) return "highlight-student";
+    if (cellLevel === expectedLevel) return "highlight-expected";
+    return "";
+  }
+
+  function editToolbar(i, lowLevel) {
+    const hintText = lowLevel
+      ? "Click skills they can do. Click the comment icon to add notes."
+      : "Click a box to set level. Click the comment icon to add notes.";
+    return `
+      <div class="edit-toolbar">
+        <div class="rubric-switcher">
+          <button class="rubric-pill ${
+            !lowLevel ? "active" : ""
+          }" onclick="switchRubricType(${i}, 'standard')">Standard Rubric</button>
+          <button class="rubric-pill ${
+            lowLevel ? "active" : ""
+          }" onclick="switchRubricType(${i}, 'lowLevel')">Low-Level Rubric</button>
+        </div>
+        <div class="edit-hint-inline">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+          ${hintText}
+        </div>
+      </div>
+    `;
+  }
+
+  function aiGenerateBtn(i) {
+    return `<button class="ai-generate-btn" onclick="event.stopPropagation(); generateAIForStudent(${i})" title="Generate AI Comment">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8 5.8 21.3l2.4-7.4L2 9.4h7.6z"/></svg>
+      AI Comment
+    </button>`;
+  }
+
+  function commentIconHtml(i, fieldKey, hasNote) {
+    const color = hasNote ? "#2e7d32" : "none";
+    return `<button class="comment-icon ${
+      hasNote ? "has-comment" : ""
+    }" onclick="event.stopPropagation(); openCommentPopover(${i}, '${fieldKey}', this)" title="${
+      hasNote ? "Edit teacher notes" : "Add teacher notes"
+    }">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="${color}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    </button>`;
+  }
+
+  function notePreviewHtml(notes) {
+    if (!notes) return "";
+    return `<div class="cell-note-preview">${escapeHtml(notes)}</div>`;
+  }
+
+  // ---------- NORMAL (STANDARD) RUBRIC ----------
+  function createNormalRubricHTML(s, editable, i) {
+    const st = STANDARDS[currentGrade];
+    const displayName = resolveName(s);
+
+    const strokes = [
+      {
+        key: "free",
+        label: "Freestyle",
+        score: s.free,
+        notes: s.freeNotes || "",
+        expected: st.free,
+        texts: [
+          "I can enter water, blow bubbles, float face down, and exit the water safely.",
+          "I can swim unassisted in a prone position (face down) with alternating arm and leg action for short amount of time.",
+          "I can swim unassisted in a prone position (face down) alternating arm and leg action for 25m with a body position approaching horizontal.",
+          "I can swim efficient freestyle for 25m with a horizontal body position, consistent kick and proper side breathing and timing.",
+          "I can swim exceptional freestyle with a streamlined horizontal body position, consistent kick, efficient pull, and exceptional side breathing and timing.",
+        ],
+      },
+      {
+        key: "back",
+        label: "Backstroke",
+        score: s.back,
+        notes: s.backNotes || "",
+        expected: st.back,
+        texts: [
+          "I can float in a supine position.",
+          "I can swim unassisted in a supine position (face up) with alternating arm and leg action for short amount of time.",
+          "I can swim unassisted in a supine position (face up) with alternating arm and leg action for 25m with a body position approaching horizontal.",
+          "I can swim efficient backstroke for 25m with a horizontal body position, consistent kick and proper timing.",
+          "I can swim exceptional backstroke for 25m with a horizontal body position, consistent kick, efficient pull, and exceptional timing.",
+        ],
+      },
+      {
+        key: "breast",
+        label: "Breaststroke",
+        score: s.breast,
+        notes: s.breastNotes || "",
+        expected: st.breast,
+        texts: [
+          "I can explore simultaneous pulls underwater.",
+          "I can demonstrate breaststroke arms and legs on land and I can begin to explore these movements in the water.",
+          "I can swim 25m in a prone position with a synchronized arm pull recovering underwater and whip style kick.",
+          "I can swim legal breaststroke for 25m with proper pull breathe kick glide sequence.",
+          "I can swim exceptional breaststroke for 25m demonstrating efficiency and proper timing.",
+        ],
+      },
+    ];
+
+    const renderRow = (r) => {
+      const cells = r.texts
+        .map((text, idx) => {
+          const level = idx + 1;
+          const isSelected = String(r.score) === String(level);
+          const cls = getClass(level, r.score, r.expected);
+          const editAttrs = editable
+            ? ` onclick="setLevel(${i}, '${r.key}', ${level})"`
+            : "";
+          const editCls = editable ? " edit-cell" : "";
+          const icon =
+            editable && isSelected ? commentIconHtml(i, r.key, !!r.notes) : "";
+          const preview =
+            editable && isSelected ? notePreviewHtml(r.notes) : "";
+          return `<td class="${cls}${editCls}"${editAttrs}>${icon}${text}${preview}</td>`;
+        })
+        .join("");
+      return `<tr><td class="col-title">${r.label}</td>${cells}</tr>`;
+    };
+
+    const staminaClick = editable
+      ? ` editable" onclick="editStamina(${i}, 'stamina')`
+      : "";
+    const commentsClick = editable
+      ? ` editable" onclick="editAdditionalComments(${i}, 'comments')`
+      : "";
+    const pencil = editable ? ' <span class="edit-pencil">✎</span>' : "";
+    const aiBtn = editable ? aiGenerateBtn(i) : "";
+
+    return `
+    <div class="rubric-page ${editable ? "edit-rubric" : ""}">
+      <div class="header">
+        <div class="header-left">
+          <img src="${LOGO_URL}" class="logo" alt="Chadwick Dolphins Logo" referrerpolicy="no-referrer">
+          <div class="school-title"><h1>Chadwick International <br><span style="font-weight:400; font-size: 0.8em;">Swimming Continuum</span></h1></div>
+        </div>
+        <div class="student-badge"><span>${displayName}</span> &nbsp;|&nbsp; Class ${
+      s.class
+    }</div>
+      </div>
+      <div class="legend-row">
+        <div class="legend-item"><div class="legend-box blue"></div> ${currentGrade} Standard</div>
+        <div class="legend-item"><div class="legend-box yellow"></div> Student Level</div>
+      </div>
+      <table class="rubric-table ${editable ? "edit-table" : ""}">
+        <tr>
+          <th class="col-title" style="background:white; border:none;"></th>
+          <th>Learning To Swim</th><th>Beginner</th><th>Developing</th>
+          <th class="col-level-4-header">Chadwick Benchmark</th><th>Strive for Excellence!</th>
+        </tr>
+        ${strokes.map(renderRow).join("")}
+      </table>
+      <div class="bottom-container">
+        <div class="stamina-card${staminaClick}">
+          <div class="stamina-header-area"><div class="stamina-title">STUDENT STAMINA${pencil}</div></div>
+          <div class="stamina-body">
+            <div class="stamina-number-row">
+              <span class="stamina-value">${s.stamina || "0"}</span>
+              <span class="stamina-unit">Meters</span>
+            </div>
+          </div>
+          <div class="stamina-footer-bar">Standard: ${st.dist}</div>
+        </div>
+        <div class="comments-card${commentsClick}">
+          <div class="comments-header"><span class="comments-label">Additional Comments${pencil}</span>${aiBtn}</div>
+          <div class="comments-text">${
+            s.comments ||
+            (editable ? "Click to add comments." : "No comments provided.")
+          }</div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // ---------- LOW-LEVEL (SPECIAL) RUBRIC ----------
+  const LOGO_URL =
+    "https:" +
+    "/" +
+    "/drive.google.com/thumbnail?id=1k1hToRtNT9TWfhJKMbRrPCmDj4XfrFdW&sz=w1000";
+
+  function createSpecialRubricHTML(s, editable, i) {
+    const st = STANDARDS[currentGrade];
+    const displayName = resolveName(s);
+
+    const specs = [
+      {
+        key: "spec1",
+        text: "I can put my face in the water.",
+        val: s.spec1,
+        notes: s.spec1Notes || "",
+      },
+      {
+        key: "spec2",
+        text: "I can blow bubbles with my mouth in the water.",
+        val: s.spec2,
+        notes: s.spec2Notes || "",
+      },
+      {
+        key: "spec3",
+        text: "I can bob (blow bubbles underwater, take a breath and then blow bubbles again repetition) up and down for 10 times.",
+        val: s.spec3,
+        notes: s.spec3Notes || "",
+      },
+      {
+        key: "spec4",
+        text: "I can float face down.",
+        val: s.spec4,
+        notes: s.spec4Notes || "",
+      },
+      {
+        key: "spec5",
+        text: "I can flutter kick.",
+        val: s.spec5,
+        notes: s.spec5Notes || "",
+      },
+    ];
+
+    const cells = specs
+      .map((sp) => {
+        const on = hasO(sp.val);
+        const cls = getSpecialClass(sp.val);
+        const editCls = editable ? " edit-cell" : "";
+        const editAttrs = editable
+          ? ` onclick="toggleSpec(${i}, '${sp.key}')"`
+          : "";
+        const icon =
+          editable && on ? commentIconHtml(i, sp.key, !!sp.notes) : "";
+        const preview = editable && on ? notePreviewHtml(sp.notes) : "";
+        return `<td class="${cls}${editCls}"${editAttrs}>${icon}${sp.text}${preview}</td>`;
+      })
+      .join("");
+
+    const staminaClick = editable
+      ? ` editable" onclick="editStamina(${i}, 'staminaKb')`
+      : "";
+    const commentsClick = editable
+      ? ` editable" onclick="editAdditionalComments(${i}, 'commentsLow')`
+      : "";
+    const pencil = editable ? ' <span class="edit-pencil">✎</span>' : "";
+    const aiBtn = editable ? aiGenerateBtn(i) : "";
+
+    return `
+    <div class="rubric-page special-layout ${editable ? "edit-rubric" : ""}">
+      <div class="header">
+        <div class="header-left">
+          <img src="${LOGO_URL}" class="logo" alt="Chadwick Dolphins Logo" referrerpolicy="no-referrer">
+          <div class="school-title"><h1>Chadwick International <br><span style="font-weight:400; font-size: 0.8em;">Swimming Continuum</span></h1></div>
+        </div>
+        <div class="student-badge"><span>${displayName}</span> &nbsp;|&nbsp; Class ${
+      s.class
+    }</div>
+      </div>
+      <div class="legend-row">
+        <div class="legend-item"><div class="legend-box blue"></div> ${currentGrade} Standard</div>
+        <div class="legend-item"><div class="legend-box yellow"></div> Student Level</div>
+      </div>
+      <table class="rubric-table ${editable ? "edit-table" : ""}">
+        <tr>
+          <th class="col-title" style="background:white; border:none;"></th>
+          <th>Skill 1</th><th>Skill 2</th><th>Skill 3</th><th>Skill 4</th><th>Skill 5</th>
+          <th style="background-color: #e1f5fe; color: #002147; border: 1px solid #b3e5fc;">${currentGrade} Standard</th>
+        </tr>
+        <tr>
+          <td class="col-title">Freestyle</td>
+          ${cells}
+          <td class="highlight-expected">${getStandardText(currentGrade)}</td>
+        </tr>
+      </table>
+      <div class="bottom-container">
+        <div class="stamina-card${staminaClick}">
+          <div class="stamina-header-area"><div class="stamina-title">STUDENT STAMINA${pencil}</div></div>
+          <div class="stamina-body">
+            <div class="stamina-number-row" style="align-items: center; flex-wrap: wrap;">
+              <span class="stamina-value">${s.staminaKb || "0"}</span>
+              <span class="stamina-unit">Meters <br><span style="color:#002147; font-weight:700;">with a kickboard</span></span>
+            </div>
+          </div>
+          <div class="stamina-footer-bar">Standard: ${st.dist}</div>
+        </div>
+        <div class="comments-card${commentsClick}">
+          <div class="comments-header"><span class="comments-label">Additional Comments${pencil}</span>${aiBtn}</div>
+          <div class="comments-text">${
+            s.commentsLow ||
+            (editable ? "Click to add comments." : "No comments provided.")
+          }</div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(
+      /[&<>"']/g,
+      (c) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        }[c])
+    );
+  }
+
+  // ============================================================
+  // EDIT ACTIONS
+  // ============================================================
+  function setLevel(i, fieldKey, level) {
+    const s = allData[i];
+    const notesKey = fieldKey + "Notes";
+    const currentLevel = s[fieldKey];
+    const newLevel = String(currentLevel) === String(level) ? "" : level;
+    const notes = s[notesKey] || "";
+    const cellValue =
+      newLevel === ""
+        ? notes
+          ? notes
+          : ""
+        : notes
+        ? `${newLevel} ${notes}`
+        : String(newLevel);
+    s[fieldKey] = newLevel === "" ? "" : newLevel;
+    saveField(i, fieldKey, cellValue);
+    renderStudent(i);
+  }
+
+  function toggleSpec(i, specKey) {
+    const s = allData[i];
+    const notesKey = specKey + "Notes";
+    const on = hasO(s[specKey]);
+    const notes = s[notesKey] || "";
+    const cellValue = on ? "" : notes ? `o ${notes}` : "o";
+    s[specKey] = on ? "" : notes ? `o ${notes}` : "o";
+    saveField(i, specKey, cellValue);
+    renderStudent(i);
+  }
+
+  function openCommentPopover(i, fieldKey, anchorEl) {
+    closePopover();
+    const s = allData[i];
+    const notesKey = fieldKey + "Notes";
+    const currentNotes = s[notesKey] || "";
+    const rect = anchorEl.getBoundingClientRect();
+
+    const popover = document.createElement("div");
+    popover.className = "comment-popover";
+    popover.style.top = rect.bottom + window.scrollY + 6 + "px";
+    popover.style.left =
+      Math.min(rect.left + window.scrollX, window.innerWidth - 340) + "px";
+    popover.innerHTML = `
+      <div class="popover-title">Teacher Notes</div>
+      <textarea id="commentTextarea" placeholder="e.g. head up breath, arms out to side">${escapeHtml(
+        currentNotes
+      )}</textarea>
+      <div class="popover-actions">
+        <button class="secondary" onclick="closePopover()">Cancel</button>
+        <button onclick="saveCellComment(${i}, '${fieldKey}')">Save</button>
+      </div>
+    `;
+    document.body.appendChild(popover);
+    activeCommentPopover = { studentIdx: i, fieldKey };
+    setTimeout(() => {
+      const ta = document.getElementById("commentTextarea");
+      if (ta) ta.focus();
+    }, 0);
+  }
+
+  function saveCellComment(i, fieldKey) {
+    const ta = document.getElementById("commentTextarea");
+    if (!ta) return;
+    const notes = ta.value.trim();
+    const s = allData[i];
+    const notesKey = fieldKey + "Notes";
+    s[notesKey] = notes;
+
+    let cellValue = "";
+    if (fieldKey.startsWith("spec")) {
+      const on = hasO(s[fieldKey]);
+      if (on) {
+        cellValue = notes ? `o ${notes}` : "o";
+        s[fieldKey] = cellValue;
+      } else {
+        return closePopover();
+      }
+    } else {
+      const level = s[fieldKey];
+      if (level === "" || level === null || level === undefined) {
+        return closePopover();
+      }
+      cellValue = notes ? `${level} ${notes}` : String(level);
+    }
+    saveField(i, fieldKey, cellValue);
+    closePopover();
+    renderStudent(i);
+  }
+
+  function closePopover() {
+    const existing = document.querySelector(".comment-popover");
+    if (existing) existing.remove();
+    activeCommentPopover = null;
+  }
+
+  function handleGlobalClick(e) {
+    if (!activeCommentPopover) return;
+    const pop = document.querySelector(".comment-popover");
+    if (pop && !pop.contains(e.target) && !e.target.closest(".comment-icon")) {
+      closePopover();
+    }
+  }
+
+  function editStamina(i, fieldKey) {
+    const s = allData[i];
+    const current = s[fieldKey] || "";
+    const withKickboard = fieldKey === "staminaKb";
+    closePopover();
+    closeModal();
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal modal-small">
+        <div class="modal-title">Student Stamina${
+          withKickboard ? " (with kickboard)" : ""
+        } — ${escapeHtml(resolveName(s))}</div>
+        <div class="stamina-input-row">
+          <input id="staminaInput" type="text" inputmode="numeric" value="${escapeHtml(
+            current.toString()
+          )}" autocomplete="off" />
+          <span class="stamina-input-unit">meters</span>
+        </div>
+        <div class="popover-actions">
+          <button class="secondary" onclick="closeModal()">Cancel</button>
+          <button onclick="saveStaminaValue(${i}, '${fieldKey}')">Save</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    activeModal = { studentIdx: i, fieldKey, kind: "stamina" };
+    setTimeout(() => {
+      const inp = document.getElementById("staminaInput");
+      if (inp) {
+        inp.focus();
+        inp.select();
+      }
+    }, 0);
+  }
+
+  function saveStaminaValue(i, fieldKey) {
+    const inp = document.getElementById("staminaInput");
+    if (!inp) return;
+    const cleaned = inp.value.toString().replace(/[^0-9.+]/g, "");
+    allData[i][fieldKey] = cleaned;
+    saveField(i, fieldKey, cleaned);
+    closeModal();
+    renderStudent(i);
+  }
+
+  function editAdditionalComments(i, fieldKey) {
+    const s = allData[i];
+    const current = s[fieldKey] || "";
+    closePopover();
+    closeModal();
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal">
+        <div class="modal-title">Additional Comments — ${escapeHtml(
+          resolveName(s)
+        )}</div>
+        <textarea id="additionalCommentsArea" rows="8">${escapeHtml(
+          current
+        )}</textarea>
+        <div class="popover-actions">
+          <button class="secondary" onclick="closeModal()">Cancel</button>
+          <button onclick="saveAdditionalComments(${i}, '${fieldKey}')">Save</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    activeModal = { studentIdx: i, fieldKey, kind: "comments" };
+    setTimeout(() => {
+      const ta = document.getElementById("additionalCommentsArea");
+      if (ta) ta.focus();
+    }, 0);
+  }
+
+  function saveAdditionalComments(i, fieldKey) {
+    const ta = document.getElementById("additionalCommentsArea");
+    if (!ta) return;
+    const val = ta.value;
+    allData[i][fieldKey] = val;
+    saveField(i, fieldKey, val);
+    closeModal();
+    renderStudent(i);
+  }
+
+  function closeModal() {
+    const m = document.querySelector(".modal-overlay");
+    if (m) m.remove();
+    activeModal = null;
+  }
+
+  function switchRubricType(i, newType) {
+    const s = allData[i];
+    const currentIsLow = shouldUseLowLevel(s);
+    const currentType = currentIsLow ? "lowLevel" : "standard";
+    if (currentType === newType) return;
+
+    s.rubricType =
+      newType === "lowLevel" ? "Low-Level Rubric" : "Standard Rubric";
+    renderStudent(i);
+
+    showToast("Saving...", 0);
+    google.script.run
+      .withSuccessHandler(() => showToast("✓ Saved", 1200))
+      .withFailureHandler((err) => {
+        hideToast();
+        alert("Error: " + err.message);
+      })
+      .switchStudentRubric(
+        currentSpreadsheetId,
+        currentGrade,
+        s.rowIndex,
+        newType
+      );
+  }
+
+  function generateAIForStudent(i) {
+    const s = allData[i];
+    showToast("🤖 Generating AI comment...", 0);
+    google.script.run
+      .withSuccessHandler((res) => {
+        hideToast();
+        if (res && res.comment) {
+          s.comments = res.comment;
+          renderStudent(i);
+          showToast("✅ Comment generated", 2000);
+        }
+      })
+      .withFailureHandler((err) => {
+        hideToast();
+        alert("Error: " + err.message);
+      })
+      .generateCommentForStudent(
+        currentSpreadsheetId,
+        currentGrade,
+        s.rowIndex
+      );
+  }
+
+  // ============================================================
+  // AUTO-COMMIT PENDING EDITS (when user changes filters / modes)
+  // ============================================================
+  function commitPendingEdits() {
+    if (activeCommentPopover) {
+      const { studentIdx, fieldKey } = activeCommentPopover;
+      const ta = document.getElementById("commentTextarea");
+      if (ta) {
+        // Only save if the textarea value differs from stored notes
+        const stored =
+          (allData[studentIdx] && allData[studentIdx][fieldKey + "Notes"]) ||
+          "";
+        if (ta.value.trim() !== stored) {
+          saveCellComment(studentIdx, fieldKey);
+        } else {
+          closePopover();
+        }
+      }
+    }
+    if (activeModal) {
+      const { studentIdx, fieldKey, kind } = activeModal;
+      if (kind === "stamina") {
+        const inp = document.getElementById("staminaInput");
+        if (inp) {
+          const cleaned = inp.value.toString().replace(/[^0-9.+]/g, "");
+          const stored =
+            (allData[studentIdx] && allData[studentIdx][fieldKey]) || "";
+          if (cleaned !== stored.toString()) {
+            saveStaminaValue(studentIdx, fieldKey);
+          } else {
+            closeModal();
+          }
+        }
+      } else {
+        const ta = document.getElementById("additionalCommentsArea");
+        if (ta) {
+          const stored =
+            (allData[studentIdx] && allData[studentIdx][fieldKey]) || "";
+          if (ta.value !== stored) {
+            saveAdditionalComments(studentIdx, fieldKey);
+          } else {
+            closeModal();
+          }
+        }
+      }
+    }
+  }
+
+  // ============================================================
+  // BACKEND SAVE — per-field queue (last-write-wins, serial per field)
+  // ============================================================
+  const pendingSaves = new Map(); // key -> latest {i, fieldKey, value}
+  const inFlightSaves = new Set(); // key currently being sent
+  let inFlightCount = 0;
+
+  function saveField(i, fieldKey, value) {
+    const key = i + ":" + fieldKey;
+    pendingSaves.set(key, { i, fieldKey, value });
+    flushSave(key);
+  }
+
+  function flushSave(key) {
+    if (inFlightSaves.has(key)) return; // already sending; latest value will be picked up next tick
+    const job = pendingSaves.get(key);
+    if (!job) return;
+    pendingSaves.delete(key);
+    inFlightSaves.add(key);
+    inFlightCount++;
+    showToast("Saving...", 0);
+
+    const done = (ok, errMsg) => {
+      inFlightSaves.delete(key);
+      inFlightCount--;
+      if (pendingSaves.has(key)) {
+        flushSave(key); // newer value arrived during flight
+      } else if (inFlightCount === 0) {
+        if (ok) showToast("✓ Saved", 1200);
+        else {
+          hideToast();
+          alert("Save error: " + errMsg);
+        }
+      }
+    };
+
+    const s = allData[job.i];
+    google.script.run
+      .withSuccessHandler(() => done(true))
+      .withFailureHandler((err) => done(false, err && err.message))
+      .saveStudentField(
+        currentSpreadsheetId,
+        currentGrade,
+        s.rowIndex,
+        job.fieldKey,
+        job.value
+      );
+  }
+
+  // ============================================================
+  // TOAST
+  // ============================================================
+  let toastTimer = null;
+  function showToast(msg, autoHide) {
+    hideToast();
+    const t = document.createElement("div");
+    t.id = "toast";
+    t.className = "toast";
+    t.textContent = msg;
+    document.body.appendChild(t);
+    if (autoHide && autoHide > 0) toastTimer = setTimeout(hideToast, autoHide);
+  }
+  function hideToast() {
+    const t = document.getElementById("toast");
+    if (t) t.remove();
+    if (toastTimer) {
+      clearTimeout(toastTimer);
+      toastTimer = null;
+    }
+  }
+</script>
